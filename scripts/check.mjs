@@ -72,7 +72,7 @@ function findOne(root, predicate) {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-continue')
-  assert.equal(manifest.version, '1.1.1')
+  assert.equal(manifest.version, '1.2.0')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')
@@ -381,6 +381,11 @@ await check('blocked, error and max-tokens turns still offer Continue', () => {
     const { harness } = scenario({ entries: [turnStart(1), turnEnd(kind, 2)] })
     assert(continueButton(harness), 'play control after ' + kind)
   }
+})
+
+await check('Continue reuses the Host send button instead of a separate control', () => {
+  assert(clientSource.includes('dshc-send-continue'))
+  assert(clientSource.includes("button.addEventListener('click', submit, true)"))
 })
 
 await check('aborted turn shows the Continue button', () => {

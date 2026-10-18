@@ -98,12 +98,13 @@ window.__ModuleLoader__.load({
         if (running === true) setSending(false)
       }, [running])
 
-      if (running !== false || blank === true || removed === true || openState !== 'open'
-        || subagent !== null || pending > 0 || !turn.eligible) {
-        return null
-      }
+      const eligible = running === false && blank !== true && removed !== true
+        && openState === 'open' && subagent === null && pending === 0 && turn.eligible
 
-      const submit = async () => {
+      const submit = async (event) => {
+        event?.preventDefault?.()
+        event?.stopImmediatePropagation?.()
+        event?.stopPropagation?.()
         if (sending) return
         setSending(true)
         setError('')
@@ -113,6 +114,39 @@ window.__ModuleLoader__.load({
         setError(t('button.error'))
       }
 
+      // Reuse the Host's own send button instead of adding a separate action.
+      // When the composer is empty that button is disabled; the continue state
+      // enables it and routes its click through the normal queued prompt path.
+      useEffect(() => {
+        if (!eligible || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return undefined
+        const button = [...document.querySelectorAll('button[aria-label]')].find((candidate) => {
+          const label = candidate.getAttribute('aria-label') ?? ''
+          return /发送消息|发送|Send message|^Send$/i.test(label)
+        })
+        if (button === undefined) return undefined
+        const previous = {
+          disabled: button.disabled,
+          label: button.getAttribute('aria-label'),
+          title: button.getAttribute('title'),
+          className: button.className,
+        }
+        button.disabled = false
+        button.classList.add('dshc-send-continue')
+        button.setAttribute('aria-label', t('button.label'))
+        button.setAttribute('title', t('button.tooltip'))
+        button.addEventListener('click', submit, true)
+        return () => {
+          button.removeEventListener('click', submit, true)
+          button.disabled = previous.disabled
+          button.className = previous.className
+          if (previous.label === null) button.removeAttribute('aria-label')
+          else button.setAttribute('aria-label', previous.label)
+          if (previous.title === null) button.removeAttribute('title')
+          else button.setAttribute('title', previous.title)
+        }
+      }, [eligible, sending, t, actions])
+
+      if (!eligible) return null
       return h(Tooltip, {
         label: error === '' ? t('button.tooltip') : error,
         side: 'top',
@@ -120,53 +154,24 @@ window.__ModuleLoader__.load({
       }, h('button', {
         type: 'button',
         className: 'dshc-continue',
+        hidden: true,
+        'aria-hidden': true,
         'aria-label': t('button.label'),
         disabled: sending,
         'data-dsh-continue': sessionId,
-        onMouseDown: (event) => { event.preventDefault?.() },
         onClick: submit,
-      },
-      h(IconPlayOutlineRegular, { size: 13 }),
+      }, h(IconPlayOutlineRegular, { size: 13 }),
       h('span', { className: 'dshc-continue-label' }, sending ? t('button.pending') : t('button.label'))))
     }
 
     /** Presentation only; colors and elevation come from the Host theme. */
     const CSS = `
 .dshc-continue {
-  box-sizing: border-box;
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--dsw-alias-border-l3);
-  border-radius: var(--dsw-radius-md);
-  background: transparent;
+  display: none;
   color: var(--dsw-alias-label-secondary);
-  font: inherit;
-  font-size: 12px;
-  line-height: 16px;
-  white-space: nowrap;
+}
+button.dshc-send-continue {
   cursor: pointer;
-}
-.dshc-continue:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-.dshc-continue:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
-  outline-offset: 1px;
-}
-.dshc-continue:disabled {
-  cursor: default;
-  opacity: .55;
-}
-.dshc-continue-label {
-  max-width: 80px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 `
 

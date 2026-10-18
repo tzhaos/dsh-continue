@@ -1,3 +1,16 @@
+## [1.2.0] - 2026-10-19
+
+### Changed
+
+- Continue now reuses the Host's normal send button while a terminal turn is idle, instead of
+  adding a separate play button beside the composer.
+- The Host send button is enabled for the continuation click and routes it through the queued
+  prompt path; the hidden React shim only carries the slot lifecycle.
+
+### Verified
+
+- `node scripts/check.mjs`: 20 checks green.
+
 # Changelog
 
 All notable changes to this project are documented in this file.
