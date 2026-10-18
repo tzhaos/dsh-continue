@@ -1,0 +1,60 @@
+{
+  "name": "dsh-continue",
+  "version": "1.1.1",
+  "private": true,
+  "description": "Adds a one-click Continue action next to the composer send button for completed or interrupted conversation turns.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node scripts/check.mjs"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-api-session-controller"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "composer",
+    "continue",
+    "resume",
+    "conversation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tzhaos/dsh-continue.git"
+  },
+  "homepage": "https://github.com/tzhaos/dsh-continue#readme",
+  "bugs": {
+    "url": "https://github.com/tzhaos/dsh-continue/issues"
+  }
+}
