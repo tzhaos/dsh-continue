@@ -213,6 +213,11 @@ button.dshc-send-continue {
               hiddenBars.add(bar)
               bar.style.display = 'none'
             }
+            for (const trigger of document.querySelectorAll('[data-turn-trigger]')) {
+              if (!/继续执行目标|Continuing goal/i.test(trigger.textContent ?? '')) continue
+              hiddenBars.add(trigger)
+              trigger.style.display = 'none'
+            }
           }
           const restoreGoalBars = () => {
             for (const bar of hiddenBars) {

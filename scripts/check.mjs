@@ -72,7 +72,7 @@ function findOne(root, predicate) {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-continue')
-  assert.equal(manifest.version, '1.3.0')
+  assert.equal(manifest.version, '1.3.1')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')
@@ -388,6 +388,7 @@ await check('Continue drives a hidden Goal round instead of a user prompt', () =
   assert(clientSource.includes('maxGoalRounds: 1'))
   assert(clientSource.includes("querySelectorAll('[data-goal-bar]')"))
   assert(clientSource.includes('button.goalObjective'))
+  assert(clientSource.includes("querySelectorAll('[data-turn-trigger]')"))
 })
 
 await check('Continue reuses the Host send button instead of a separate control', () => {

@@ -1,3 +1,14 @@
+## [1.3.1] - 2026-10-19
+
+### Fixed
+
+- Hide the goal-trigger attribution row (`[data-turn-trigger]`, “继续执行目标”) for internally
+  created Goal rounds as well as the GoalBar, so the continuation does not expose Goal UI.
+
+### Verified
+
+- `node scripts/check.mjs`: 21 checks green.
+
 ## [1.3.0] - 2026-10-19
 
 ### Changed
