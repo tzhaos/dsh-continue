@@ -1,3 +1,15 @@
+## [1.3.2] - 2026-10-19
+
+### Fixed
+
+- Read `remote.goals.get()` as the goal view itself (not `{ goal }`), so an existing goal is
+  detected and cleared correctly.
+- Added a regression test that Continue creates a Goal and submits no user prompt.
+
+### Verified
+
+- `node scripts/check.mjs`: 22 checks green.
+
 ## [1.3.1] - 2026-10-19
 
 ### Fixed

@@ -276,7 +276,7 @@ button.dshc-send-continue {
                   if (goals !== undefined && typeof goals.create === 'function') {
                     let current
                     try { current = await goals.get(sessionId) } catch { current = undefined }
-                    const existing = current?.goal
+                    const existing = current
                     if (existing?.phase === 'active') {
                       if (existing.id !== hiddenGoalId) return false
                       hideGoalBars()
