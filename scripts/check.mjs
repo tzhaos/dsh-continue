@@ -72,7 +72,7 @@ function findOne(root, predicate) {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-continue')
-  assert.equal(manifest.version, '1.2.0')
+  assert.equal(manifest.version, '1.3.0')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')
@@ -362,7 +362,7 @@ function tooltipLabel(harness) {
 
 await check('factory registers one composer-right Continue action', () => {
   const { plugin, registrations, registration } = scenario()
-  equal(plugin.inject.slice().sort(), ['locale', 'sessions', 'slots'])
+  equal(plugin.inject.slice().sort(), ['locale', 'remote.goals', 'sessions', 'slots'])
   assert.equal(registrations.length, 1)
   assert.equal(registration.options.name, 'conversation.input.right')
   assert.equal(registration.options.id, 'continue.trigger')
@@ -381,6 +381,13 @@ await check('blocked, error and max-tokens turns still offer Continue', () => {
     const { harness } = scenario({ entries: [turnStart(1), turnEnd(kind, 2)] })
     assert(continueButton(harness), 'play control after ' + kind)
   }
+})
+
+await check('Continue drives a hidden Goal round instead of a user prompt', () => {
+  assert(clientSource.includes('goals.create'))
+  assert(clientSource.includes('maxGoalRounds: 1'))
+  assert(clientSource.includes("querySelectorAll('[data-goal-bar]')"))
+  assert(clientSource.includes('button.goalObjective'))
 })
 
 await check('Continue reuses the Host send button instead of a separate control', () => {
@@ -424,11 +431,11 @@ await check('clicking Continue submits a queued prompt through the Session', asy
   harness.rerender()
   assert.equal(beginCalls.length, 1, 'beginSubmission called')
   assert.equal(beginCalls[0].mode, 'queue')
-  assert.equal(beginCalls[0].text, t('button.continuePrompt'))
+  assert.equal(beginCalls[0].text, t('button.goalObjective'))
   equal(beginCalls[0].attachments, [])
   assert.equal(promptCalls.length, 1, 'prompt called')
   assert.equal(promptCalls[0].mode, 'queue')
-  equal(promptCalls[0].content, [{ type: 'text', text: t('button.continuePrompt') }])
+  equal(promptCalls[0].content, [{ type: 'text', text: t('button.goalObjective') }])
   assert.equal(promptCalls[0].requestId, 'request-1')
   assert(textOf(continueButton(harness)).includes(t('button.pending')), 'pending label')
 })

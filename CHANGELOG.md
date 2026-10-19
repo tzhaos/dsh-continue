@@ -1,3 +1,16 @@
+## [1.3.0] - 2026-10-19
+
+### Changed
+
+- Continue now starts a Goal round through the Host Goal service instead of submitting a visible
+  “继续” user message. The GoalBar for this internally-created goal is hidden while it runs and the
+  goal is cleared when the round completes, so the continuation appears as normal assistant work.
+- Fall back to the queued prompt only when the deployment has no Goal service.
+
+### Verified
+
+- `node scripts/check.mjs`: 21 checks green.
+
 ## [1.2.0] - 2026-10-19
 
 ### Changed

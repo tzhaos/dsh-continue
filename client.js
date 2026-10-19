@@ -27,6 +27,7 @@ window.__ModuleLoader__.load({
       'button.label': '继续',
       'button.tooltip': '继续上一次任务（无需输入）',
       'button.continuePrompt': '继续',
+      'button.goalObjective': '继续完成上一次任务直到完成，不要询问用户确认。',
       'button.pending': '正在继续…',
       'button.error': '继续失败，请重试',
     }
@@ -35,6 +36,7 @@ window.__ModuleLoader__.load({
       'button.label': 'Continue',
       'button.tooltip': 'Continue the previous task without typing',
       'button.continuePrompt': 'Continue',
+      'button.goalObjective': 'Continue the previous task until it is complete. Do not ask the user for confirmation.',
       'button.pending': 'Continuing…',
       'button.error': 'Continue failed — try again',
     }
@@ -108,7 +110,7 @@ window.__ModuleLoader__.load({
         if (sending) return
         setSending(true)
         setError('')
-        const accepted = await actions.continueTask(t('button.continuePrompt'))
+        const accepted = await actions.continueTask(t('button.goalObjective'))
         if (accepted) return
         setSending(false)
         setError(t('button.error'))
@@ -202,6 +204,54 @@ button.dshc-send-continue {
           } catch {
             binding = undefined
           }
+          let goalTimer = null
+          let hiddenGoalId = null
+          const hiddenBars = new Set()
+          const hideGoalBars = () => {
+            if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return
+            for (const bar of document.querySelectorAll('[data-goal-bar]')) {
+              hiddenBars.add(bar)
+              bar.style.display = 'none'
+            }
+          }
+          const restoreGoalBars = () => {
+            for (const bar of hiddenBars) {
+              try { bar.style.display = '' } catch { /* disposed */ }
+            }
+            hiddenBars.clear()
+          }
+          const watchHiddenGoal = (ref) => {
+            if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return
+            hideGoalBars()
+            if (goalTimer !== null) clearInterval(goalTimer)
+            goalTimer = setInterval(() => {
+              let projection
+              try { projection = binding?.session?.projections?.faceOf?.('goal')?.getSnapshot?.() } catch { projection = undefined }
+              const goal = projection?.goal
+              if (goal?.id !== undefined && goal.id !== ref.id) {
+                clearInterval(goalTimer)
+                goalTimer = null
+                restoreGoalBars()
+                return
+              }
+              if (goal?.phase === 'active') {
+                hideGoalBars()
+                return
+              }
+              clearInterval(goalTimer)
+              goalTimer = null
+              if (goal?.id === ref.id && (goal.phase === 'complete' || goal.phase === 'blocked')) {
+                void (async () => {
+                  try { await ctx.remote?.goals?.clear?.(sessionId, { id: goal.id, revision: goal.revision }) } catch { /* best effort */ }
+                  finally { restoreGoalBars(); hiddenGoalId = null }
+                })()
+                return
+              }
+              restoreGoalBars()
+              if (goal?.id !== ref.id) hiddenGoalId = null
+            }, 200)
+          }
+
           return {
             sessionId,
             actions: {
@@ -216,7 +266,33 @@ button.dshc-send-continue {
               continueTask: async (text) => {
                 try {
                   const session = binding?.session
-                  if (session === undefined || typeof session.prompt !== 'function') return false
+                  if (session === undefined) return false
+                  const goals = ctx.remote?.goals
+                  if (goals !== undefined && typeof goals.create === 'function') {
+                    let current
+                    try { current = await goals.get(sessionId) } catch { current = undefined }
+                    const existing = current?.goal
+                    if (existing?.phase === 'active') {
+                      if (existing.id !== hiddenGoalId) return false
+                      hideGoalBars()
+                      return true
+                    }
+                    if (existing?.id !== undefined && existing.id !== hiddenGoalId) return false
+                    if (existing?.id !== undefined) {
+                      try { await goals.clear(sessionId, { id: existing.id, revision: existing.revision }) } catch { /* best effort */ }
+                    }
+                    const created = await goals.create(sessionId, {
+                      objective: text,
+                      maxGoalRounds: 1,
+                    })
+                    const ref = created?.ref
+                    if (ref === undefined) return false
+                    hiddenGoalId = ref.id
+                    watchHiddenGoal(ref)
+                    return true
+                  }
+                  // Fallback for a deployment without the Goal service.
+                  if (typeof session.prompt !== 'function') return false
                   const submission = typeof session.beginSubmission === 'function'
                     ? session.beginSubmission({ mode: 'queue', text, attachments: [] })
                     : undefined
@@ -249,7 +325,7 @@ button.dshc-send-continue {
 
     return {
       /** Services this Client plugin waits for before applying. */
-      inject: ['slots', 'locale', 'sessions'],
+      inject: ['slots', 'locale', 'sessions', 'remote.goals'],
       apply,
     }
   },
