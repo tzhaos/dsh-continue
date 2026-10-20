@@ -3,13 +3,13 @@
 简体中文 | [English](README.en.md)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web 客户端插件：对话任务
-任务被停止、异常中断或输出被截断后，输入框为空时**发送按钮会变成播放键**。点一下就会继续上一轮任务，不必再手动输入“继续”。
+任务被停止、异常中断或输出被截断后，输入框为空时**发送按钮会变成实心播放键**。点一下就会继续上一轮任务，不必再手动输入“继续”。
 
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-0.2.1--rc.2-4D6BFE)
-![Version](https://img.shields.io/badge/version-1.1.1-blue)
+![Version](https://img.shields.io/badge/version-1.5.0-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)
-![Checks](https://img.shields.io/badge/checks-19-brightgreen)
+![Checks](https://img.shields.io/badge/checks-27-brightgreen)
 
 ## 为什么
 
@@ -18,11 +18,13 @@
 
 `dsh-continue` 把这一步变成一个按钮：
 
-- 对话空闲、输入框为空、最后一轮是**中止/异常/截断状态**时，**发送按钮本身变成播放图标**
+- 对话空闲、输入框为空、最后一轮是**中止/异常/截断状态**时，**发送按钮本身变成实心播放图标**（箭头被替换成实心三角），React 重渲染也不会把它还原
 - 正常完成（`completed`）和 `forked` 不显示，避免普通对话也被 Continue 打扰
 - 显示的状态：用户停止（`aborted`）、`blocked`、`error`、`max-tokens`、`interrupted`，以及尾部只有 `turn/start` 的中断
 - 输入文字或添加附件后立即恢复普通发送按钮，不会遮挡正常发送
-- 点击后直接通过当前 Session 的 `prompt()` 提交一条普通的排队提示词
+- 点击后由**本插件自己的宿主路由**注入一条隐藏的 user 消息（`source.kind = 'continue'`），不经过 Goal 服务
+- 聊天里**不会出现普通用户气泡**，取而代之是一张和 Goal 同款的**可展开触发卡片**，标题为「继续对话」
+- 卡片按注入时间匹配，重启后依然保持「继续对话」标题
 - 不需要先填入草稿、不需要附件、也不触发发送按钮以外的流程
 
 ## 可见状态
@@ -42,14 +44,15 @@
 
 点击播放键会：
 
-1. 通过 `sessions.binding(sessionId).session` 取得当前 Session；
-2. 调用 `beginSubmission({ mode: 'queue', text })` 建立本地提交回显；
-3. 调用 `session.prompt([{ type: 'text', text }], 'queue', undefined, requestId)`；
-4. Host 接受后播放键暂时隐藏，等待运行状态接管；
-5. 失败时播放键恢复，并在 tooltip 中提示重试。
+1. 通过 `sessions.binding(sessionId).session` 确认当前 Session 仍可用；
+2. `POST /dsh-continue/round`，由宿主侧调用 `agent.followup({ role: 'user', content, source: { kind: 'continue', form: 'notice' } })`；
+3. 该消息进入 `next-turn` 并唤醒一轮，和 Goal 回合走的是同一条队列与生命周期；
+4. 客户端随后把这张触发卡片的标题改成「继续对话」并换成播放图标（按注入时间匹配，最多看守 20 秒）；
+5. 路由不可用时回退到 `session.prompt()` 提交一条普通排队提示词，保证功能不消失；
+6. 失败时播放键恢复，并在 tooltip 中提示重试。
 
-提交的是普通用户提示词：中文界面发送 `继续`，英文界面发送 `Continue`。它不绕过 Host 的
-Session 日志、队列或运行生命周期。
+提交的仍是普通用户提示词：中文界面发送 `继续完成上一次任务直到完成，不要询问用户确认。`，英文界面发送对应英文。
+它不绕过 Host 的 Session 日志、队列或运行生命周期，也不需要 Goal 服务。
 
 ## 安装
 
@@ -85,18 +88,22 @@ plugin_manager(action="install_bundle", target="<本目录的绝对路径>")
 
 ## 实现
 
-插件注册在 `conversation.input.right` 槽位：
+宿主半注册同源路由 `POST /dsh-continue/round`，把一条 `source.kind = 'continue'` 的 user 消息交给
+当前 live agent 的 `followup()`；浏览器半注册在 `conversation.input.right` 槽位：
 
 1. 通过 `useSession` 读取当前会话的 `running` / `blank` / `openState` / `subagent` /
    `pendingSubmissions`；
 2. 注入的 `turnState()` 从 Session 事件窗口反向查找最后一个 `turn/start` 或 `turn/end`；
-3. 终态、空闲且输入框为空时，在 Host 主发送按钮的位置覆盖一个播放键；
-4. 点击后使用当前 Session 的公开 `prompt()` 接口提交，不修改会话 Store，不写额外的远端接口。
+3. 终态、空闲且输入框为空时，接管 Host 主发送按钮（启用 + 实心播放图标），并用 MutationObserver
+   顶住 React 重渲染；
+4. 点击后调用上面的宿主路由；随后按注入时间把对应的触发卡片改标题为「继续对话」并换成播放图标。
+   路由不可用时回退到公开的 `session.prompt()`。
 
 ## 已知限制
 
 - 只覆盖当前打开的对话；侧边栏其他会话需要切换过去后才显示按钮
-- 有正文的“继续”提示词会作为一条真实用户消息出现在对话记录中
+- 触发卡片标题的替换依赖「注入时间 ↔ 卡片时间」匹配（±4 秒）与内置标题文本，DSH 若改变触发
+  卡片结构需要跟随适配；卡片记录的注入时间保存在 localStorage，重启后仍能改回「继续对话」
 - 任务的“正常完成”和“停止”都通过 Session 的 `turn/end` reason 判断；DSH 未来若改变事件
   契约需要跟随适配
 - DSH 客户端 API 仍是 pre-stable

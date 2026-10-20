@@ -1,3 +1,54 @@
+## [1.5.0] - 2026-10-19
+
+### Changed
+
+- Continue no longer borrows the Goal service. The Host half registers `POST /dsh-continue/round`,
+  which queues one user message with `source: { kind: 'continue', form: 'notice' }` through the live
+  agent's `followup()` — the same path a Goal round uses, without creating, arming, or clearing a
+  goal. The client keeps `session.prompt()` as a fallback when the route is unavailable.
+- The chat shows one expandable trigger card for that turn instead of a normal user bubble. The
+  browser half relabels it to **继续对话 / Continue conversation** and swaps in a play glyph; the
+  injected round time is stored in `localStorage`, so the label also survives a reload.
+- Removed the Goal-bar hiding code, the Goal remote dependency and the Goal round bookkeeping.
+
+### Verified
+
+- `node scripts/check.mjs`: 27 checks green (including the new route, fallback and card tests).
+
+## [1.4.1] - 2026-10-19
+
+### Fixed
+
+- Continue clicks failed silently with `cannot get property "remote" without inject`: the plugin read
+  `ctx.remote.goals` but only declared `remote.goals` in its inject list. `remote` is now declared,
+  the access is defensive, and the adopted button's tooltip shows the failure text.
+- Live diagnostics captured seven consecutive `continue-error` entries with that message, confirming
+  the root cause.
+
+## [1.4.0] - 2026-10-19
+
+### Fixed
+
+- The adopted send button no longer goes dead: React re-renders the composer button on every snapshot
+  change and resets `disabled`, which used to re-disable the Continue button after adoption. A
+  mutation guard now re-asserts the adopted state (enabled, label, tooltip, marker class) until the
+  Continue state ends.
+
+### Changed
+
+- The adopted send button now shows a **solid play glyph** (CSS clip-path) instead of the Host's send
+  arrow while Continue is available.
+
+### Added
+
+- Temporary diagnostics: eligibility transitions, adoption, click, goal get/create/clear results and
+  goal phase changes are appended to the same `queue-withdraw-diag.jsonl` sink used by
+  dsh-queue-withdraw. Remove once Continue is confirmed working.
+
+### Verified
+
+- `node scripts/check.mjs`: 24 checks green.
+
 ## [1.3.2] - 2026-10-19
 
 ### Fixed

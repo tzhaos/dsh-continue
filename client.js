@@ -17,7 +17,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
     const { Tooltip, IconPlayOutlineRegular } = primitives
-    const { useEffect, useState } = React
+    const { useEffect, useRef, useState } = React
     const h = React.createElement
 
     /** Locale namespace owned by this plugin. */
@@ -27,22 +27,85 @@ window.__ModuleLoader__.load({
       'button.label': '继续',
       'button.tooltip': '继续上一次任务（无需输入）',
       'button.continuePrompt': '继续',
-      'button.goalObjective': '继续完成上一次任务直到完成，不要询问用户确认。',
+      'button.objective': '继续完成上一次任务直到完成，不要询问用户确认。',
       'button.pending': '正在继续…',
       'button.error': '继续失败，请重试',
+      'card.title': '继续对话',
     }
 
     const en = {
       'button.label': 'Continue',
       'button.tooltip': 'Continue the previous task without typing',
       'button.continuePrompt': 'Continue',
-      'button.goalObjective': 'Continue the previous task until it is complete. Do not ask the user for confirmation.',
+      'button.objective': 'Continue the previous task until it is complete. Do not ask the user for confirmation.',
       'button.pending': 'Continuing…',
       'button.error': 'Continue failed — try again',
+      'card.title': 'Continue conversation',
     }
 
     /** Terminal reasons where continuing the task is useful. */
     const CONTINUE_REASONS = new Set(['aborted', 'blocked', 'error', 'max-tokens', 'interrupted'])
+
+    /** Host route that queues one hidden continuation turn. */
+    const ROUND_PATH = '/dsh-continue/round'
+    /** Built-in titles the Host's trigger card uses for an unknown source kind. */
+    const DEFAULT_TRIGGER_TITLES = new Set(['收到执行请求', 'Execution requested'])
+    /** Where this plugin remembers its injected rounds, so cards survive reloads. */
+    const ROUNDS_KEY = 'dsh.continue.rounds'
+    /** Interval API, absent in some non-browser harnesses. */
+    const timerApi = typeof setInterval === 'function' ? { setInterval, clearInterval } : undefined
+
+    /** @returns {Array<{sessionId: string, at: number}>} remembered rounds. */
+    function readRounds() {
+      try {
+        const raw = localStorage.getItem(ROUNDS_KEY)
+        const parsed = raw === null ? [] : JSON.parse(raw)
+        return Array.isArray(parsed) ? parsed.filter((entry) => typeof entry?.at === 'number') : []
+      } catch {
+        return []
+      }
+    }
+
+    /** @param {Array<{sessionId: string, at: number}>} rounds - rounds to persist. */
+    function writeRounds(rounds) {
+      try {
+        localStorage.setItem(ROUNDS_KEY, JSON.stringify(rounds))
+      } catch {
+        // Persistence is best effort; the live rename still happens.
+      }
+    }
+
+    /**
+     * Temporary diagnostic sink shared with dsh-queue-withdraw: it appends one
+     * JSON line to `$DSH_HOME/queue-withdraw-diag.jsonl`. Used to find out why
+     * Continue fails to trigger; safe to delete once the cause is fixed.
+     */
+    const DIAG_PATH = '/dsh-queue-withdraw/diag'
+    /** @param {string} phase @param {object} payload @returns {void} */
+    function report(phase, payload) {
+      try {
+        if (typeof fetch !== 'function') return
+        void fetch(DIAG_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ source: 'dsh-continue', phase, ...payload, at: Date.now() }),
+        }).catch(() => {})
+      } catch {
+        // Diagnostics never affect the feature.
+      }
+    }
+    /** @param {unknown} value @returns {string} short JSON or error text. */
+    function brief(value) {
+      try {
+        if (value === undefined) return 'undefined'
+        if (value instanceof Error) return value.message
+        const text = JSON.stringify(value)
+        return text.length > 400 ? text.slice(0, 400) + '…' : text
+      } catch {
+        return String(value)
+      }
+    }
+
 
     /**
      * Read the last turn boundary from one Session event window.
@@ -103,14 +166,41 @@ window.__ModuleLoader__.load({
       const eligible = running === false && blank !== true && removed !== true
         && openState === 'open' && subagent === null && pending === 0 && turn.eligible
 
+      // One diagnostic line per eligibility transition, so a report tells why
+      // the button is missing instead of only that it is.
+      const lastEligibility = useRef('')
+      useEffect(() => {
+        const key = JSON.stringify({ eligible, running, blank, removed, openState, subagent, pending, turn })
+        if (lastEligibility.current === key) return
+        lastEligibility.current = key
+        report('eligibility', {
+          sessionId,
+          eligible,
+          running,
+          blank,
+          removed,
+          openState,
+          subagent: subagent === null ? null : typeof subagent,
+          pending,
+          turn,
+        })
+      }, [eligible, running, blank, removed, openState, subagent, pending, turn, sessionId])
+
+      // Cards from earlier rounds keep their Continue title after a reload.
+      useEffect(() => {
+        actions.renameCards?.(t('card.title'))
+      }, [actions, t, sessionId])
+
       const submit = async (event) => {
         event?.preventDefault?.()
         event?.stopImmediatePropagation?.()
         event?.stopPropagation?.()
+        report('click', { sessionId, sending })
         if (sending) return
         setSending(true)
         setError('')
-        const accepted = await actions.continueTask(t('button.goalObjective'))
+        const accepted = await actions.continueTask(t('button.objective'), t('card.title'))
+        report('result', { sessionId, accepted })
         if (accepted) return
         setSending(false)
         setError(t('button.error'))
@@ -118,35 +208,52 @@ window.__ModuleLoader__.load({
 
       // Reuse the Host's own send button instead of adding a separate action.
       // When the composer is empty that button is disabled; the continue state
-      // enables it and routes its click through the normal queued prompt path.
+      // enables it, paints a solid play glyph and routes its click through the
+      // normal continuation path. The host re-renders that button frequently
+      // (every snapshot change resets its props), so a mutation guard keeps the
+      // adopted state in place instead of letting React disable it again.
       useEffect(() => {
         if (!eligible || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return undefined
         const button = [...document.querySelectorAll('button[aria-label]')].find((candidate) => {
           const label = candidate.getAttribute('aria-label') ?? ''
           return /发送消息|发送|Send message|^Send$/i.test(label)
         })
+        report('adopt', { sessionId, found: button !== undefined })
         if (button === undefined) return undefined
+        const marker = 'dshc-send-continue'
+        const label = t('button.label')
+        const tooltip = error === '' ? t('button.tooltip') : error
         const previous = {
           disabled: button.disabled,
           label: button.getAttribute('aria-label'),
           title: button.getAttribute('title'),
           className: button.className,
         }
-        button.disabled = false
-        button.classList.add('dshc-send-continue')
-        button.setAttribute('aria-label', t('button.label'))
-        button.setAttribute('title', t('button.tooltip'))
+        const apply = () => {
+          if (button.disabled !== false) button.disabled = false
+          if (!button.classList.contains(marker)) button.classList.add(marker)
+          if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label)
+          if (button.getAttribute('title') !== tooltip) button.setAttribute('title', tooltip)
+        }
+        apply()
+        const guard = typeof MutationObserver === 'function'
+          ? new MutationObserver(() => apply())
+          : null
+        guard?.observe(button, { attributes: true, attributeFilter: ['disabled', 'class', 'aria-label', 'title'], childList: true })
         button.addEventListener('click', submit, true)
         return () => {
+          guard?.disconnect()
           button.removeEventListener('click', submit, true)
-          button.disabled = previous.disabled
-          button.className = previous.className
-          if (previous.label === null) button.removeAttribute('aria-label')
-          else button.setAttribute('aria-label', previous.label)
-          if (previous.title === null) button.removeAttribute('title')
-          else button.setAttribute('title', previous.title)
+          if (button.classList.contains(marker)) {
+            button.disabled = previous.disabled
+            button.className = previous.className
+            if (previous.label === null) button.removeAttribute('aria-label')
+            else button.setAttribute('aria-label', previous.label)
+            if (previous.title === null) button.removeAttribute('title')
+            else button.setAttribute('title', previous.title)
+          }
         }
-      }, [eligible, sending, t, actions])
+      }, [eligible, sending, t, actions, error])
 
       if (!eligible) return null
       return h(Tooltip, {
@@ -172,8 +279,20 @@ window.__ModuleLoader__.load({
   display: none;
   color: var(--dsw-alias-label-secondary);
 }
+/* Adopted Host send button: solid play glyph instead of the arrow. */
 button.dshc-send-continue {
   cursor: pointer;
+}
+button.dshc-send-continue > svg {
+  display: none;
+}
+button.dshc-send-continue::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  clip-path: polygon(30% 16%, 30% 84%, 86% 50%);
 }
 `
 
@@ -204,57 +323,54 @@ button.dshc-send-continue {
           } catch {
             binding = undefined
           }
-          let goalTimer = null
-          let hiddenGoalId = null
-          const hiddenBars = new Set()
-          const hideGoalBars = () => {
+          // Continue injects its own hidden turn (see the Host half), so the
+          // Goal service is not involved at all. The Host renders that turn as
+          // a trigger card whose built-in title table has no extension point,
+          // so the card is relabelled here: the injected round time is recorded
+          // and every trigger card drawn at that instant gets the Continue
+          // title and a play glyph.
+          const rounds = readRounds()
+          let cardTimer = null
+          const rememberRound = (at) => {
+            rounds.push({ sessionId, at })
+            while (rounds.length > 50) rounds.shift()
+            writeRounds(rounds)
+          }
+          const renameCards = (label) => {
             if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return
-            for (const bar of document.querySelectorAll('[data-goal-bar]')) {
-              hiddenBars.add(bar)
-              bar.style.display = 'none'
-            }
-            for (const trigger of document.querySelectorAll('[data-turn-trigger]')) {
-              if (!/继续执行目标|Continuing goal/i.test(trigger.textContent ?? '')) continue
-              hiddenBars.add(trigger)
-              trigger.style.display = 'none'
+            for (const card of document.querySelectorAll('[data-turn-trigger]')) {
+              if (card.hasAttribute?.('data-dsh-continue-card') === true) continue
+              const time = card.querySelector?.('time[datetime]')
+              const at = time === null || time === undefined ? Number.NaN : Date.parse(time.getAttribute('datetime') ?? '')
+              if (!Number.isFinite(at)) continue
+              if (!rounds.some((round) => round.sessionId === sessionId && Math.abs(round.at - at) < 4000)) continue
+              const title = [...(card.querySelectorAll?.('span') ?? [])]
+                .find((node) => DEFAULT_TRIGGER_TITLES.has((node.textContent ?? '').trim()))
+              if (title === undefined) continue
+              title.textContent = typeof label === 'string' && label !== '' ? label : '继续对话'
+              const icon = card.querySelector?.('button svg')
+              if (icon !== null && icon !== undefined) {
+                try {
+                  icon.setAttribute('viewBox', '0 0 16 16')
+                  icon.innerHTML = '<path d="M5.6 3.3 12.7 8l-7.1 4.7z" fill="currentColor" stroke="none"/>'
+                } catch {
+                  // A shape change only costs the glyph, not the title.
+                }
+              }
+              card.setAttribute('data-dsh-continue-card', '')
             }
           }
-          const restoreGoalBars = () => {
-            for (const bar of hiddenBars) {
-              try { bar.style.display = '' } catch { /* disposed */ }
-            }
-            hiddenBars.clear()
-          }
-          const watchHiddenGoal = (ref) => {
-            if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return
-            hideGoalBars()
-            if (goalTimer !== null) clearInterval(goalTimer)
-            goalTimer = setInterval(() => {
-              let projection
-              try { projection = binding?.session?.projections?.faceOf?.('goal')?.getSnapshot?.() } catch { projection = undefined }
-              const goal = projection?.goal
-              if (goal?.id !== undefined && goal.id !== ref.id) {
-                clearInterval(goalTimer)
-                goalTimer = null
-                restoreGoalBars()
-                return
+          const armCardWatch = (label) => {
+            renameCards(label)
+            if (timerApi === undefined || cardTimer !== null) return
+            const started = Date.now()
+            cardTimer = timerApi.setInterval(() => {
+              renameCards(label)
+              if (Date.now() - started > 20000) {
+                timerApi.clearInterval(cardTimer)
+                cardTimer = null
               }
-              if (goal?.phase === 'active') {
-                hideGoalBars()
-                return
-              }
-              clearInterval(goalTimer)
-              goalTimer = null
-              if (goal?.id === ref.id && (goal.phase === 'complete' || goal.phase === 'blocked')) {
-                void (async () => {
-                  try { await ctx.remote?.goals?.clear?.(sessionId, { id: goal.id, revision: goal.revision }) } catch { /* best effort */ }
-                  finally { restoreGoalBars(); hiddenGoalId = null }
-                })()
-                return
-              }
-              restoreGoalBars()
-              if (goal?.id !== ref.id) hiddenGoalId = null
-            }, 200)
+            }, 400)
           }
 
           return {
@@ -262,41 +378,38 @@ button.dshc-send-continue {
             actions: {
               /** @returns {{eligible: boolean, reason: string}} terminal state. */
               turnState: () => turnStateOf(binding),
+              /** Relabel historical Continue cards after a reload. */
+              renameCards,
+              armCardWatch,
               /**
-               * Submit a normal queued prompt through the retained Session
-               * binding, exactly like typed input.
+               * Queue one hidden continuation turn through the Host route.
                * @param {string} text - continuation prompt.
+               * @param {string} label - card title to apply to the injected turn.
                * @returns {Promise<boolean>} whether the Host accepted it.
                */
-              continueTask: async (text) => {
+              continueTask: async (text, label) => {
                 try {
                   const session = binding?.session
                   if (session === undefined) return false
-                  const goals = ctx.remote?.goals
-                  if (goals !== undefined && typeof goals.create === 'function') {
-                    let current
-                    try { current = await goals.get(sessionId) } catch { current = undefined }
-                    const existing = current
-                    if (existing?.phase === 'active') {
-                      if (existing.id !== hiddenGoalId) return false
-                      hideGoalBars()
-                      return true
-                    }
-                    if (existing?.id !== undefined && existing.id !== hiddenGoalId) return false
-                    if (existing?.id !== undefined) {
-                      try { await goals.clear(sessionId, { id: existing.id, revision: existing.revision }) } catch { /* best effort */ }
-                    }
-                    const created = await goals.create(sessionId, {
-                      objective: text,
-                      maxGoalRounds: 1,
+                  let queued = false
+                  try {
+                    const response = await fetch(ROUND_PATH, {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ sessionId, text, summary: label }),
                     })
-                    const ref = created?.ref
-                    if (ref === undefined) return false
-                    hiddenGoalId = ref.id
-                    watchHiddenGoal(ref)
+                    const body = await response.json?.()
+                    queued = response.ok === true && body?.ok === true
+                    report('round-queued', { sessionId, queued, at: body?.at })
+                  } catch (error) {
+                    report('round-error', { sessionId, error: brief(error) })
+                  }
+                  if (queued) {
+                    rememberRound(Date.now())
+                    armCardWatch(label)
                     return true
                   }
-                  // Fallback for a deployment without the Goal service.
+                  // Fallback: an ordinary queued prompt when the route is gone.
                   if (typeof session.prompt !== 'function') return false
                   const submission = typeof session.beginSubmission === 'function'
                     ? session.beginSubmission({ mode: 'queue', text, attachments: [] })
@@ -315,10 +428,13 @@ button.dshc-send-continue {
                   }
                   if (result?.ok !== true) {
                     submission?.abandon?.()
+                    report('prompt-rejected', { sessionId, result: brief(result) })
                     return false
                   }
+                  report('prompt-accepted', { sessionId })
                   return true
-                } catch {
+                } catch (error) {
+                  report('continue-error', { sessionId, error: brief(error) })
                   return false
                 }
               },
@@ -330,7 +446,7 @@ button.dshc-send-continue {
 
     return {
       /** Services this Client plugin waits for before applying. */
-      inject: ['slots', 'locale', 'sessions', 'remote.goals'],
+      inject: ['slots', 'locale', 'sessions'],
       apply,
     }
   },

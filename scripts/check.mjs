@@ -11,11 +11,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
+import { continueMessage, inject as hostInject } from '../index.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = (relative) => fs.readFileSync(path.join(ROOT, relative), 'utf8')
 const manifest = JSON.parse(read('package.json'))
 const clientSource = read('client.js')
+const hostSource = read('index.js')
 
 let checks = 0
 
@@ -72,7 +74,7 @@ function findOne(root, predicate) {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-continue')
-  assert.equal(manifest.version, '1.3.2')
+  assert.equal(manifest.version, '1.5.0')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')
@@ -173,6 +175,12 @@ function createFakeReact() {
     useEffect(effect) {
       queuedEffects.push(effect)
     },
+    useRef(initial) {
+      const index = cursor
+      cursor += 1
+      if (!(index in hooks)) hooks[index] = { current: initial }
+      return hooks[index]
+    },
     Fragment: Symbol('Fragment'),
   }
 
@@ -234,7 +242,7 @@ function createFakeDocument() {
 }
 
 /** Load the client module and return its plugin definition. */
-function loadClientModule({ react, primitives, fakeDocument }) {
+function loadClientModule({ react, primitives, fakeDocument, fetchImpl, storage }) {
   let loaded
   const sandbox = {
     window: {
@@ -242,7 +250,11 @@ function loadClientModule({ react, primitives, fakeDocument }) {
     },
     document: fakeDocument,
     console,
+    localStorage: storage ?? { getItem: () => null, setItem: () => {} },
+    setInterval: () => 0,
+    clearInterval: () => {},
   }
+  if (fetchImpl !== undefined) sandbox.fetch = fetchImpl
   vm.runInNewContext(clientSource, sandbox, { filename: 'client.js' })
   return loaded.factory((id) => {
     if (id === 'react') return react
@@ -318,7 +330,13 @@ function scenario(options = {}) {
   const sessions = { binding: () => binding }
   const localeRegistrations = []
   const registrations = []
-  const plugin = loadClientModule({ react: reactRuntime.react, primitives, fakeDocument })
+  const plugin = loadClientModule({
+    react: reactRuntime.react,
+    primitives,
+    fakeDocument,
+    fetchImpl: options.fetch,
+    storage: options.storage,
+  })
   const ctx = {
     remote: options.remote,
     effect: (factory) => { factory(); return () => {} },
@@ -363,7 +381,8 @@ function tooltipLabel(harness) {
 
 await check('factory registers one composer-right Continue action', () => {
   const { plugin, registrations, registration } = scenario()
-  equal(plugin.inject.slice().sort(), ['locale', 'remote.goals', 'sessions', 'slots'])
+  equal(plugin.inject.slice().sort(), ['locale', 'sessions', 'slots'])
+  assert(!plugin.inject.includes('remote'), 'no Goal remote is injected')
   assert.equal(registrations.length, 1)
   assert.equal(registration.options.name, 'conversation.input.right')
   assert.equal(registration.options.id, 'continue.trigger')
@@ -384,38 +403,77 @@ await check('blocked, error and max-tokens turns still offer Continue', () => {
   }
 })
 
-await check('Continue drives a hidden Goal round instead of a user prompt', () => {
-  assert(clientSource.includes('goals.create'))
-  assert(clientSource.includes('maxGoalRounds: 1'))
-  assert(clientSource.includes("querySelectorAll('[data-goal-bar]')"))
-  assert(clientSource.includes('button.goalObjective'))
-  assert(clientSource.includes("querySelectorAll('[data-turn-trigger]')"))
+await check('Continue queues its own hidden turn instead of a Goal round', () => {
+  assert(clientSource.includes("const ROUND_PATH = '/dsh-continue/round'"))
+  assert(clientSource.includes('round-queued'))
+  assert(clientSource.includes('button.objective'))
+  assert(!clientSource.includes('goals.create'), 'the Goal service is not used')
+  assert(!clientSource.includes('remote.goals'), 'the Goal remote is not read')
+  assert(!clientSource.includes('data-goal-bar'), 'no Goal bar is touched')
 })
 
-await check('Continue creates a Goal instead of submitting a prompt', async () => {
-  const calls = []
-  const remote = {
-    goals: {
-      get: async () => undefined,
-      create: async (sessionId, request) => {
-        calls.push({ sessionId, request })
-        return { ref: { id: 'goal-1', revision: 1 } }
-      },
-      clear: async () => ({ id: 'goal-1', revision: 2 }),
-    },
+await check('Continue posts to the Host route instead of submitting a prompt', async () => {
+  const requests = []
+  const fetch = async (url, init) => {
+    if (String(url).includes('/dsh-continue/round')) requests.push({ url, body: JSON.parse(init.body) })
+    return { ok: true, json: async () => ({ ok: true, messageId: 'message-1', at: 1700000000000 }) }
   }
-  const { harness, promptCalls } = scenario({ remote })
+  const { harness, promptCalls } = scenario({ fetch })
   await continueButton(harness).props.onClick()
   harness.rerender()
-  assert.equal(calls.length, 1, 'goal created')
-  assert.equal(calls[0].sessionId, 'session-a')
-  assert.equal(calls[0].request.maxGoalRounds, 1)
-  assert.equal(promptCalls.length, 0, 'no user prompt submitted')
+  assert.equal(requests.length, 1, 'one hidden turn queued')
+  assert.equal(requests[0].url, '/dsh-continue/round')
+  assert.equal(requests[0].body.sessionId, 'session-a')
+  assert(typeof requests[0].body.text === 'string' && requests[0].body.text.length > 0)
+  assert.equal(requests[0].body.summary, '继续对话', 'localized card title travels with the request')
+  assert.equal(promptCalls.length, 0, 'no visible user prompt')
+})
+
+await check('a rejected round falls back to a queued prompt', async () => {
+  const fetch = async () => ({ ok: false, json: async () => ({ ok: false, reason: 'agent-unavailable' }) })
+  const { harness, promptCalls } = scenario({ fetch })
+  await continueButton(harness).props.onClick()
+  harness.rerender()
+  assert.equal(promptCalls.length, 1, 'fallback prompt submitted')
+})
+
+await check('the injected turn card is relabelled to Continue conversation', () => {
+  assert(clientSource.includes('data-turn-trigger'), 'reads the Host trigger card')
+  assert(clientSource.includes('data-dsh-continue-card'), 'marks the card it relabelled')
+  assert(clientSource.includes("'card.title': '继续对话'"))
+  assert(clientSource.includes("'card.title': 'Continue conversation'"))
+  assert(clientSource.includes('DEFAULT_TRIGGER_TITLES'))
+  assert(clientSource.includes('rounds.some'), 'matches the card by its injected round time')
+})
+
+await check('the Host half builds a hidden continue turn', () => {
+  const message = continueMessage('继续', '继续对话')
+  assert.equal(message.role, 'user')
+  equal(message.content, [{ type: 'text', text: '继续' }])
+  assert.equal(message.source.kind, 'continue')
+  assert.equal(message.source.form, 'notice')
+  assert.equal(message.source.summary, '继续对话')
+  assert(typeof message.id === 'string' && message.id.length > 0)
+  equal(hostInject.slice().sort(), ['agents', 'webServer'])
+  assert(hostSource.includes("path: ROUND_PATH"), 'route registered')
+  assert(hostSource.includes('agent.followup(message)'), 'queued through the live agent')
 })
 
 await check('Continue reuses the Host send button instead of a separate control', () => {
   assert(clientSource.includes('dshc-send-continue'))
   assert(clientSource.includes("button.addEventListener('click', submit, true)"))
+})
+
+await check('the adopted send button shows a solid play glyph', () => {
+  assert(clientSource.includes('button.dshc-send-continue > svg'))
+  assert(clientSource.includes('button.dshc-send-continue::before'))
+  assert(clientSource.includes('clip-path: polygon'))
+})
+
+await check('the adopted button state survives Host re-renders', () => {
+  assert(clientSource.includes('new MutationObserver(() => apply())'))
+  assert(clientSource.includes("attributeFilter: ['disabled', 'class', 'aria-label', 'title']"))
+  assert(clientSource.includes('button.disabled = false'))
 })
 
 await check('aborted turn shows the Continue button', () => {
@@ -454,11 +512,11 @@ await check('clicking Continue submits a queued prompt through the Session', asy
   harness.rerender()
   assert.equal(beginCalls.length, 1, 'beginSubmission called')
   assert.equal(beginCalls[0].mode, 'queue')
-  assert.equal(beginCalls[0].text, t('button.goalObjective'))
+  assert.equal(beginCalls[0].text, t('button.objective'))
   equal(beginCalls[0].attachments, [])
   assert.equal(promptCalls.length, 1, 'prompt called')
   assert.equal(promptCalls[0].mode, 'queue')
-  equal(promptCalls[0].content, [{ type: 'text', text: t('button.goalObjective') }])
+  equal(promptCalls[0].content, [{ type: 'text', text: t('button.objective') }])
   assert.equal(promptCalls[0].requestId, 'request-1')
   assert(textOf(continueButton(harness)).includes(t('button.pending')), 'pending label')
 })
